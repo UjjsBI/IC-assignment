@@ -1,29 +1,49 @@
-from fastapi import FastAPI
-from pydantic import BaseModel
-import google.generativeai as genai
-import os
+# filename: summarizer_app.py
 
-# Set up the generative AI model
-genai.configure(api_key=" ")  
+from fastapi import FastAPI, HTTPException # type: ignore
+from pydantic import BaseModel # type: ignore
+from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+import torch # type: ignore
 
-model = genai.GenerativeModel("gemini-1.5-flash")
+app = FastAPI(title="Mistral-7B Summarization API")
 
-# Initialize FastAPI
-app = FastAPI()
+# Load Mistral-7B-Instruct model and tokenizer
+model_name = "mistralai/Mistral-7B-Instruct-v0.1"
 
-# Pydantic model for input validation
-class StoryRequest(BaseModel):
-    Story: str
+try:
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype=torch.float16,
+        device_map="auto"
+    )
+    generator = pipeline(
+        "text-generation",
+        model=model,
+        tokenizer=tokenizer,
+        torch_dtype=torch.float16,
+        device_map="auto"
+    )
+except Exception as e:
+    raise RuntimeError(f"Model loading failed: {str(e)}")
 
-# POST endpoint for generating a story based on the title
-@app.post("/Summarize")
-async def generate_story(request: StoryRequest):
-    # Get the title from the request
-    Story = request.Story
-    
-    # Generate story using the provided title
-    response = model.generate_content([f"Please summarize the following text:\n\n{Story}"])
-    
-    # Return the generated story as a response
-    return {"Story": Story, "Summmary": response.text}
+# Request body schema
+class SummarizationRequest(BaseModel):
+    text: str
+    max_tokens: int = 150
+    temperature: float = 0.5
 
+@app.post("/summarize")
+def summarize_text(request: SummarizationRequest):
+    try:
+        prompt = f"Summarize the following text:\n\n{request.text}\n\nSummary:"
+        result = generator(
+            prompt,
+            max_new_tokens=request.max_tokens,
+            temperature=request.temperature,
+            do_sample=True,
+            top_p=0.9
+        )
+        return {"summary": result[0]["generated_text"].replace(prompt, "").strip()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
